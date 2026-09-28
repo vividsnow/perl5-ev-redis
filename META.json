@@ -44,10 +44,11 @@
       },
       "test" : {
          "requires" : {
+            "Devel::Peek" : "0",
             "Devel::Refcount" : "0",
             "Test::Deep" : "0",
             "Test::More" : "0.98",
-            "Test::RedisServer" : "0.12",
+            "Test::RedisServer" : "0.23",
             "Test::TCP" : "1.18"
          }
       }
@@ -63,6 +64,6 @@
          "web" : "https://github.com/vividsnow/perl5-ev-redis"
       }
    },
-   "version" : "0.09",
+   "version" : "0.15",
    "x_static_install" : 0
 }

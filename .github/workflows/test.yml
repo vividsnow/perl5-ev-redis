@@ -9,10 +9,11 @@ on:
 jobs:
   test-xt:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -22,11 +23,11 @@ jobs:
           perl-version: "5.40"
           install-modules-with: cpm
           install-modules-args: --with-develop --with-configure
-          install-modules: |
-            Test::CPAN::Meta
-            Test::Pod
-            Test::Spellunker
-            Test::MinimumVersion::Fast
+
+      - name: Install aspell
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aspell aspell-en
 
       - name: Set up Redis
         uses: shogo82148/actions-setup-redis@v1
@@ -37,6 +38,7 @@ jobs:
       - name: Test
         run: |
           perl Makefile.PL && make && RELEASE_TESTING=1 make test
+          prove -b xt/
 
   list:
     runs-on: ubuntu-latest
@@ -88,6 +90,7 @@ jobs:
 
   test:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     needs: list
 
     strategy:
@@ -96,7 +99,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -117,12 +120,87 @@ jobs:
         run: |
           perl Makefile.PL && make && make test
 
-  test-valkey:
+  build-perl-5-12:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Perl 5.12
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: "5.12"
+
+      - name: Build and load (the test dependencies need perl 5.14)
+        run: |
+          cpanm --notest EV File::Which
+          perl Makefile.PL && make
+          perl -Mblib -MEV::Redis -e 'EV::Redis->new; print "EV::Redis $EV::Redis::VERSION loads\n"'
+
+  test-i386-time64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Test on a 32-bit perl with 64-bit time_t
+        run: docker run --rm --platform linux/386 -v "$PWD":/src:ro i386/debian:stable-slim bash /src/.github/i386-time64.sh
+
+  test-valgrind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Perl
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: "5.40"
+          install-modules-with: cpm
+          install-modules-args: --with-configure --with-test
+
+      - name: Set up Redis
+        uses: shogo82148/actions-setup-redis@v1
+        with:
+          redis-version: "7.4"
+          auto-start: false
+
+      - name: Install valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind
+
+      - name: Test under valgrind
+        run: |
+          perl Makefile.PL && make
+          perl=$(perl -MConfig -e 'print $Config{perlpath}')
+          rc=0
+          for t in t/*.t; do
+            [ "$t" = t/timeout_traffic.t ] && continue
+            echo "== $t"
+            valgrind --error-exitcode=9 --quiet "$perl" -Mblib "$t" || rc=1
+          done
+          exit $rc
+
+  test-valkey:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -147,6 +225,7 @@ jobs:
 
   test-alpine:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     container: alpine:latest
 
     steps:
@@ -155,7 +234,7 @@ jobs:
           apk add --no-cache perl perl-dev perl-app-cpanminus make gcc musl-dev pkgconf openssl-dev openssl redis git
 
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -170,10 +249,11 @@ jobs:
 
   test-freebsd:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -192,10 +272,11 @@ jobs:
 
   test-openbsd:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
