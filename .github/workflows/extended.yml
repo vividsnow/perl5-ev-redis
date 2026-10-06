@@ -1,0 +1,159 @@
+name: "Extended checks"
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  test-soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Perl
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: "5"
+          install-modules-with: cpm
+          install-modules-args: --with-configure --with-test
+
+      - name: Set up Redis
+        uses: shogo82148/actions-setup-redis@v1
+        with:
+          redis-version: "8"
+          auto-start: false
+
+      - name: Run seeded lifecycle tests
+        shell: bash
+        env:
+          EV_REDIS_SOAK_ITERATIONS: "500"
+        run: |
+          perl Makefile.PL && make
+          mkdir -p "$RUNNER_TEMP/soak"
+          rc=0
+          for seed in 1 27491 8675309; do
+            EV_REDIS_SOAK_SEED=$seed prove -bv .github/lifecycle.t 2>&1 \
+              | tee "$RUNNER_TEMP/soak/seed-$seed.log" || rc=1
+          done
+          exit $rc
+
+      - name: Upload soak reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: soak
+          path: ${{ runner.temp }}/soak/
+          retention-days: 14
+
+  test-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    env:
+      EV_REDIS_SSL: "1"
+      EV_REDIS_REQUIRE_TLS_TESTS: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y perl cpanminus build-essential patch pkg-config libssl-dev openssl redis-server redis-tools
+          sudo cpanm -n EV EV::MakeMaker File::Which Test::Deep Test::TCP Test::RedisServer Devel::Refcount
+
+      - name: Test on native ARM64
+        run: |
+          perl -V
+          redis-server --version
+          perl Makefile.PL && make && make test
+
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Perl
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: "5.40"
+          install-modules-with: cpm
+          install-modules-args: --with-configure --with-test
+
+      - name: Set up Redis
+        uses: shogo82148/actions-setup-redis@v1
+        with:
+          redis-version: "7.4"
+          auto-start: false
+
+      - name: Record repeated benchmark samples
+        env:
+          BENCH_COMMANDS: "100000"
+        run: |
+          perl Makefile.PL && make
+          mkdir -p "$RUNNER_TEMP/benchmark"
+          git rev-parse HEAD > "$RUNNER_TEMP/benchmark/environment.txt"
+          perl -V >> "$RUNNER_TEMP/benchmark/environment.txt"
+          redis-server --version >> "$RUNNER_TEMP/benchmark/environment.txt"
+          uname -a >> "$RUNNER_TEMP/benchmark/environment.txt"
+          for sample in 1 2 3 4 5; do
+            timeout 120s /usr/bin/time -v perl -Mblib bench/benchmark.pl \
+              > "$RUNNER_TEMP/benchmark/sample-$sample.log" 2>&1
+          done
+
+      - name: Summarize benchmark samples
+        if: always()
+        shell: perl {0}
+        env:
+          BENCH_REPORT_DIR: ${{ runner.temp }}/benchmark
+        run: |
+          use strict;
+          use warnings;
+          my %rates;
+          for my $path (glob "$ENV{BENCH_REPORT_DIR}/sample-*.log") {
+              open my $fh, '<', $path or die "$path: $!";
+              my $output = do { local $/; <$fh> };
+              next unless $output =~ /Benchmark complete\./;
+              my $phase;
+              for my $line (split /\n/, $output) {
+                  if ($line =~ /^(\d+\. .+)$/) {
+                      $phase = $1;
+                  } elsif ($line =~ /^\s+Rate:\s+([\d.]+)([MK]?)\s+ops\/sec/) {
+                      push @{$rates{$phase}}, $1 * ($2 eq 'M' ? 1e6 : $2 eq 'K' ? 1e3 : 1);
+                  } elsif ($line =~ /^\s+max_pending=(\S+)\s+([\d.]+)([MK]?)\s+ops\/sec/) {
+                      push @{$rates{"$phase (max_pending=$1)"}}, $2 * ($3 eq 'M' ? 1e6 : $3 eq 'K' ? 1e3 : 1);
+                  }
+              }
+          }
+          open my $summary, '>>', $ENV{GITHUB_STEP_SUMMARY} or die "GITHUB_STEP_SUMMARY: $!";
+          print {$summary} "Median throughput from complete samples. Results are informational; no performance threshold is applied.\n\n";
+          print {$summary} "No complete benchmark samples were produced.\n\n" unless %rates;
+          print {$summary} "| Workload | Samples | Median ops/sec |\n| --- | ---: | ---: |\n";
+          for my $phase (sort keys %rates) {
+              my @samples = sort { $a <=> $b } @{$rates{$phase}};
+              my $middle = int(@samples / 2);
+              my $median = @samples % 2 ? $samples[$middle] : ($samples[$middle - 1] + $samples[$middle]) / 2;
+              printf {$summary} "| %s | %d | %.0f |\n", $phase, scalar(@samples), $median;
+          }
+          print {$summary} "\nRaw samples, client CPU times and environment details are in the benchmark artifact.\n";
+
+      - name: Upload benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark
+          path: ${{ runner.temp }}/benchmark/
+          retention-days: 30

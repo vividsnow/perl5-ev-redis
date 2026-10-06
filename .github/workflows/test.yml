@@ -9,10 +9,11 @@ on:
 jobs:
   test-xt:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -22,11 +23,11 @@ jobs:
           perl-version: "5.40"
           install-modules-with: cpm
           install-modules-args: --with-develop --with-configure
-          install-modules: |
-            Test::CPAN::Meta
-            Test::Pod
-            Test::Spellunker
-            Test::MinimumVersion::Fast
+
+      - name: Install aspell
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aspell aspell-en
 
       - name: Set up Redis
         uses: shogo82148/actions-setup-redis@v1
@@ -45,49 +46,23 @@ jobs:
     steps:
       - name: list
         id: set-matrix
+        shell: perl {0}
         run: |
-          import json
-          import os
-          perl = [
-              '5.40',
-              '5.38',
-              '5.36',
-              '5.34',
-              '5.32',
-              '5.30',
-              '5.28',
-              '5.26',
-              '5.24',
-              '5.22',
-              '5.20',
-              '5.18',
-              '5.16',
-              '5.14'
-          ]
-          redis = [
-              '7.4',
-              '7.2',
-              '7.0',
-              '6.2',
-              '6.0',
-              '5.0',
-          ]
-          includes = []
-          for r in redis:
-              includes.append({'perl': perl[0], 'redis': r, 'os': 'macos-latest'})
-          matrix = {
-              'perl': perl,
-              'redis': redis,
-              'os': ['ubuntu-latest'],
-              'include': includes
-          }
-          output = json.dumps(matrix, separators=(',', ':'))
-          with open(os.environ["GITHUB_OUTPUT"], 'a', encoding="utf-8") as f:
-            f.write('matrix={0}\n'.format(output))
-        shell: python
+          use strict;
+          use warnings;
+          use JSON::PP qw(encode_json);
+          my @perl = qw(5.40 5.38 5.36 5.34 5.32 5.30 5.28 5.26 5.24 5.22 5.20 5.18 5.16 5.14);
+          my @redis = qw(7.4 7.2 7.0 6.2 6.0 5.0);
+          my @include = map { +{ perl => $perl[0], redis => $_, os => 'macos-latest' } } @redis;
+          push @include, { perl => '5', redis => '8', os => 'ubuntu-latest' };
+          my $matrix = { perl => \@perl, redis => \@redis, os => ['ubuntu-latest'], include => \@include };
+          open my $fh, '>>', $ENV{GITHUB_OUTPUT} or die "GITHUB_OUTPUT: $!";
+          print {$fh} 'matrix=', encode_json($matrix), "\n";
+          close $fh or die "GITHUB_OUTPUT: $!";
 
   test:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     needs: list
 
     strategy:
@@ -96,7 +71,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -117,12 +92,153 @@ jobs:
         run: |
           perl Makefile.PL && make && make test
 
-  test-valkey:
+  test-dist:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        ssl: [0, 1]
+    env:
+      EV_REDIS_SSL: ${{ matrix.ssl }}
+      EV_REDIS_REQUIRE_TLS_TESTS: ${{ matrix.ssl }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Perl
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: "5"
+          install-modules-with: cpm
+          install-modules-args: --with-configure --with-test
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev openssl patch pkg-config
+
+      - name: Set up Redis
+        uses: shogo82148/actions-setup-redis@v1
+        with:
+          redis-version: "8"
+          auto-start: false
+
+      - name: Build, test and install the distribution
+        run: perl .github/dist-test.pl
+
+  build-perl-5-12:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Perl 5.12
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: "5.12"
+
+      - name: Build and load (the test dependencies need perl 5.14)
+        run: |
+          cpanm --notest EV File::Which
+          perl Makefile.PL && make
+          perl -Mblib -MEV::Redis -e 'EV::Redis->new; print "EV::Redis $EV::Redis::VERSION loads\n"'
+
+  test-i386-time64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Test on a 32-bit perl with 64-bit time_t
+        run: docker run --rm --platform linux/386 -v "$PWD":/src:ro i386/debian:stable-slim bash /src/.github/i386-time64.sh
+
+  test-valgrind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Perl
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: "5.40"
+          install-modules-with: cpm
+          install-modules-args: --with-configure --with-test
+
+      - name: Set up Redis
+        uses: shogo82148/actions-setup-redis@v1
+        with:
+          redis-version: "7.4"
+          auto-start: false
+
+      - name: Install valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind
+
+      - name: Test under valgrind
+        run: |
+          perl Makefile.PL && make
+          perl=$(perl -MConfig -e 'print $Config{perlpath}')
+          mkdir -p "$RUNNER_TEMP/valgrind"
+          rc=0
+          for t in t/*.t; do
+            [ "$t" = t/timeout_traffic.t ] && continue
+            echo "== $t"
+            valgrind --error-exitcode=9 --quiet \
+              --log-file="$RUNNER_TEMP/valgrind/memory-${t##*/}.%p.log" \
+              "$perl" -Mblib "$t" || rc=1
+          done
+          exit $rc
+
+      - name: Check lifecycle and push cleanup for definite leaks
+        if: ${{ !cancelled() }}
+        env:
+          EV_REDIS_SOAK_ITERATIONS: "14"
+        run: |
+          perl=$(perl -MConfig -e 'print $Config{perlpath}')
+          mkdir -p "$RUNNER_TEMP/valgrind"
+          rc=0
+          for t in t/resp3.t t/dispatch_state.t t/uaf_deferred_disconnect.t t/uaf_skip_pending.t .github/lifecycle.t; do
+            echo "== $t"
+            valgrind --error-exitcode=9 --leak-check=full \
+              --show-leak-kinds=definite --errors-for-leak-kinds=definite \
+              --log-file="$RUNNER_TEMP/valgrind/leaks-${t##*/}.%p.log" \
+              "$perl" -Mblib "$t" || rc=1
+          done
+          exit $rc
+
+      - name: Upload valgrind reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: valgrind
+          path: ${{ runner.temp }}/valgrind/
+          retention-days: 14
+
+  test-valkey:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -147,15 +263,16 @@ jobs:
 
   test-alpine:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     container: alpine:latest
 
     steps:
       - name: Install dependencies
         run: |
-          apk add --no-cache perl perl-dev perl-app-cpanminus make gcc musl-dev pkgconf openssl-dev openssl redis git
+          apk add --no-cache perl perl-dev perl-app-cpanminus make patch gcc musl-dev pkgconf openssl-dev openssl redis git
 
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -170,10 +287,11 @@ jobs:
 
   test-freebsd:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -192,10 +310,11 @@ jobs:
 
   test-openbsd:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
