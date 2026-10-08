@@ -89,7 +89,7 @@ sub format_time {
 }
 
 sub bench_set_pipeline {
-    print "1. SET Pipeline (fire-and-forget style)\n";
+    print "1. SET Pipeline (per-command callbacks)\n";
     print "-" x 40, "\n";
 
     my $r = create_client(max_pending => $MAX_PENDING);
